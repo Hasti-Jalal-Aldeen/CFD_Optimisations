@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import ctypes as ct
+import argparse as AP
+import configparser as cfgp
+import os
+
+from interface.Mesh import process_import, process_checkcell, process_plot_BC_faces
+# from interface.PST import process_PST
+from interface.Export import process_export, process_batchexport
+
+def main():
+    ap = AP.ArgumentParser(prog='HCFD')
+    sp = ap.add_subparsers()
+
+    ap_import = sp.add_parser('import', help='import --help')
+    ap_import.add_argument('meshin', help='input .msh file')
+    ap_import.add_argument('meshout', help='output mesh file')
+    ap_import.set_defaults(process=process_import)
+
+    # ap_PST = sp.add_parser('PST', help='PST (2D only) --help')
+    # ap_PST.add_argument('mesh', help='mesh file')
+    # ap_PST.add_argument('soln', help='input hsln file')
+    # ap_PST.add_argument('visout', help='output png file')
+    # ap_PST.add_argument('field', help='r,u,v,U,p')
+    # ap_PST.set_defaults(process=process_PST)
+
+    ap_export = sp.add_parser('export', help='export --help')
+    ap_export.add_argument('mesh', help='mesh file')
+    ap_export.add_argument('solnin', help='input hsln file')
+    ap_export.add_argument('solnout', help='output vtu file')
+    ap_export.set_defaults(process=process_export)
+
+    ap_bexport = sp.add_parser('bexport', help='bexport --help')
+    ap_bexport.add_argument('mesh', help='mesh file')
+    ap_bexport.add_argument('solnin_pattern', help='list of input hsln files')
+    ap_bexport.add_argument('solnout_pattern', help='output vtu files')
+    ap_bexport.add_argument('-Wnone', help='Suppress warnings', action='store_true')
+    ap_bexport.set_defaults(process=process_batchexport)
+
+    ap_checkcell = sp.add_parser('checkcell', help='checkcell --help')
+    ap_checkcell.add_argument('meshin', help='input .hmsh file')
+    ap_checkcell.add_argument('cell', help='cell')
+    ap_checkcell.set_defaults(process=process_checkcell)
+
+    ap_checkcell = sp.add_parser('plotBCfaces', help='plotBCfaces --help')
+    ap_checkcell.add_argument('meshin', help='input .hmsh file')
+    ap_checkcell.add_argument('imgout', help='image output file')
+    ap_checkcell.set_defaults(process=process_plot_BC_faces)
+
+    args = ap.parse_args()
+    args.process(args)
+
+if __name__=="__main__":
+    main()

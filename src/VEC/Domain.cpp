@@ -1,0 +1,182 @@
+#include "VEC/Domain.hpp"
+#include <immintrin.h>
+using namespace VEC;
+
+Domain::Domain(Mesh& mesh) 
+: Nf(mesh.Nf), Nc(mesh.Nc), Nfp(ceil(Nf,VECLEN)*VECLEN), Ncol(mesh.Ncol), NBC(mesh.NBCcol), mesh(mesh)
+{
+    C[0] = (int*) _mm_malloc(sizeof(int)*Nfp, ALIGN);
+    C[1] = (int*) _mm_malloc(sizeof(int)*Nfp, ALIGN);
+    for (int dim = 0; dim < NDIMS; dim++) {
+        rf[dim][0] = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, rf[dim][0]);
+        rf[dim][1] = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, rf[dim][1]);
+        xf[dim]    = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, xf[dim]);
+        nf[dim]    = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, nf[dim]);
+        xc[dim]    = (double*) _mm_malloc(sizeof(double)* Nc, ALIGN); setarr(0,  Nc, 0.0, xc[dim]);
+    }
+    Af = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, Af);
+    If = (double*) _mm_malloc(sizeof(double)*Nfp, ALIGN); setarr(0, Nfp, 0.0, If);
+    iv = (double*) _mm_malloc(sizeof(double)* Nc, ALIGN); setarr(0,  Nc, 0.0, iv);
+
+    get_face_con();
+    compute_xf();
+    compute_xc();
+    compute_rf();
+    compute_nf();
+    compute_If();
+    compute_iv();
+}
+
+Domain::~Domain() {
+    _mm_free(C[0]);
+    _mm_free(C[1]);
+    for (int dim = 0; dim < NDIMS; dim++) {
+        _mm_free(rf[dim][0]);
+        _mm_free(rf[dim][1]);
+        _mm_free(xf[dim]);
+        _mm_free(nf[dim]);
+        _mm_free(xc[dim]);
+    }
+    _mm_free(Af);
+    _mm_free(If);
+    _mm_free(iv);
+}
+
+
+void Domain::get_face_con() {
+    for (int f = 0; f < Nf; f++) {
+        C[0][f] = mesh.fc_con[2*f+0];
+        C[1][f] = mesh.fc_con[2*f+1];
+    }
+    for (int f = Nf; f < Nfp; f++) {
+        C[0][f] = Nc;
+        C[1][f] = Nc;
+    }
+}
+
+void Domain::compute_xf() {
+    for (int f = 0; f < Nf; f++) {
+        int n1 = mesh.fn_con[2*f+0];
+        int n2 = mesh.fn_con[2*f+1];
+
+        double nd1[NDIMS], nd2[NDIMS];
+        for (int dim = 0; dim < NDIMS; dim++) {
+            nd1[dim] = mesh.nodes[NDIMS*n1+dim];
+            nd2[dim] = mesh.nodes[NDIMS*n2+dim];
+        }
+
+        for (int dim = 0; dim < NDIMS; dim++) {
+            xf[dim][f] = 0.5*(nd1[dim] + nd2[dim]);
+        }
+    }
+}
+
+void Domain::compute_xc() {
+    for (int i = 0; i < Nc; i++) {
+        int nnds = mesh.cn_off[i+1]-mesh.cn_off[i];
+        for (int n = mesh.cn_off[i]; n < mesh.cn_off[i+1]; n++) {
+            int nd = mesh.cn_con[n];
+            for (int dim = 0; dim < NDIMS; dim++) {
+                xc[dim][i] += mesh.nodes[nd*NDIMS+dim]/nnds;
+            }
+        }
+    }
+}
+
+void Domain::compute_rf() {
+    int F_BC = mesh.coloff[Ncol-NBC];
+    for (int f = 0; f < Nf; f++) {
+        int CL = C[0][f];
+        int CR = C[1][f];
+
+        for (int dim = 0; dim < NDIMS; dim++) {
+            rf[dim][0][f] = xf[dim][f] - xc[dim][CL];
+            rf[dim][1][f] = xf[dim][f] - xc[dim][CR];
+        }
+    }
+    for (int dim = 0; dim < NDIMS; dim++) {
+        for (int f = F_BC; f < Nf; f++) {
+            rf[dim][1][f] = -rf[dim][0][f];
+        }
+    }
+}
+
+void Domain::compute_nf() {
+    for (int f = 0; f < Nf; f++) {
+        int n1 = mesh.fn_con[2*f+0];
+        int n2 = mesh.fn_con[2*f+1];
+
+        double nd1[NDIMS], nd2[NDIMS];
+        for (int dim = 0; dim < NDIMS; dim++) {
+            nd1[dim] = mesh.nodes[NDIMS*n1+dim];
+            nd2[dim] = mesh.nodes[NDIMS*n2+dim];
+        }
+        
+        // 2D ONLY
+        double n[2], rl[2];
+        n[0]  =  (nd2[1]-nd1[1]);
+        n[1]  = -(nd2[0]-nd1[0]);
+        Af[f] = vabs(n);
+        for (int dim = 0; dim < NDIMS; dim++) {
+            n[dim] /= Af[f];
+            rl[dim] = rf[dim][0][f];
+        }
+
+        double nf_dot_rl = dot(n, rl);
+
+        int sgn  = (nf_dot_rl > 0) ? 1 : -1;
+        nf[0][f] = sgn*n[0];
+        nf[1][f] = sgn*n[1];
+    }
+}
+
+void Domain::compute_If() {
+    for (int f = 0; f < Nf; f++) {
+        double n[NDIMS], rl[NDIMS], rr[NDIMS];
+        for (int dim = 0; dim < NDIMS; dim++) {
+            n[dim]  = nf[dim][f];
+            rl[dim] = rf[dim][0][f];
+            rr[dim] = rf[dim][1][f];
+        }
+
+        double nf_dot_rL =  dot(n, rl);
+        double nf_dot_rR = -dot(n, rr);
+
+        If[f] = nf_dot_rL/(nf_dot_rL+nf_dot_rR);
+    }
+}
+
+void Domain::compute_iv() {
+    for (int f = 0; f < Nf; f++) {
+        double n[NDIMS], rl[NDIMS], rr[NDIMS];
+        for (int dim = 0; dim < NDIMS; dim++) {
+            n[dim]  = nf[dim][f];
+            rl[dim] = rf[dim][0][f];
+            rr[dim] = rf[dim][1][f];
+        }
+        double Af_dot_rL = Af[f]*dot(n, rl);
+        double Af_dot_rR = Af[f]*dot(n, rr);
+
+        int CL = C[0][f];
+        int CR = C[1][f];
+        iv[CL] += Af_dot_rL/NDIMS;
+        iv[CR] -= Af_dot_rR/NDIMS;
+    }
+
+    for (int i = 0; i < Nc; i++) iv[i] = 1.0/iv[i];
+
+    int F_BC = mesh.coloff[Ncol-NBC];
+    for (int f = F_BC; f < Nf; f++) {
+        int CL = C[0][f];
+        int CR = C[1][f];
+        iv[CR] = iv[CL];
+    }
+}
+
+void Domain::zero_bc_iv() {
+    int F_BC = mesh.coloff[Ncol-NBC];
+    for (int f = F_BC; f < Nf; f++) {
+        int CR = C[1][f];
+        iv[CR] = 0.0;
+    }
+}

@@ -1,0 +1,7 @@
+bin/
+solsVTU/
+_OPTIMISATIONS.txt
+CLEARSOLS.sh
+EXPORT.sh
+usefulcmds.txt
+wedge.msh
